@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>TremorBall Online</title>
+    <title>TremorBall Pro</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
@@ -10,7 +10,6 @@
 
         body { margin: 0; background: #121212; color: white; font-family: 'Roboto', sans-serif; overflow: hidden; }
         
-        /* ЭКРАНЫ */
         .screen { 
             position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
             display: flex; flex-direction: column; align-items: center; justify-content: center; 
@@ -20,33 +19,20 @@
         .hidden { display: none !important; }
 
         h1 { font-family: 'Black Ops One', cursive; font-size: 80px; margin-bottom: 20px; text-shadow: 0 10px 20px rgba(0,0,0,0.5); }
-        
-        .btn {
-            padding: 15px 40px; margin: 10px; font-size: 24px; font-weight: bold;
-            background: white; color: #333; border: none; border-radius: 50px; cursor: pointer;
-            font-family: 'Black Ops One', cursive; text-transform: uppercase;
-            transition: 0.2s;
-        }
+        .btn { padding: 15px 40px; margin: 10px; font-size: 24px; font-weight: bold; background: white; color: #333; border: none; border-radius: 50px; cursor: pointer; font-family: 'Black Ops One', cursive; text-transform: uppercase; transition: 0.2s; }
         .btn:hover { transform: scale(1.1); box-shadow: 0 0 20px white; }
         .btn-secondary { background: #333; color: white; }
-
-        /* Поле ссылки */
-        .link-box { 
-            background: rgba(0,0,0,0.6); padding: 15px; border-radius: 10px; 
-            font-family: monospace; font-size: 18px; color: #4cd137; border: 2px solid #4cd137;
-            margin-top: 20px; user-select: all; cursor: pointer;
-        }
-
-        /* Выбор скина */
+        .link-box { background: rgba(0,0,0,0.6); padding: 15px; border-radius: 10px; font-family: monospace; font-size: 18px; color: #4cd137; border: 2px solid #4cd137; margin-top: 20px; user-select: all; cursor: pointer; }
         .skin-selector { display: flex; gap: 10px; margin-bottom: 30px; }
         .skin-option { width: 50px; height: 50px; border-radius: 50%; border: 3px solid white; cursor: pointer; transition: transform 0.2s; }
         .skin-option.selected { box-shadow: 0 0 15px #fff; border-color: yellow; transform: scale(1.3); }
 
-        /* ИГРА */
         #game-container { position: relative; width: 100vw; height: 100vh; display: none; justify-content: center; align-items: center; }
         canvas { border: 4px solid #444; box-shadow: 0 0 50px rgba(0,0,0,0.8); background: radial-gradient(circle, #333 0%, #111 100%); border-radius: 8px; }
         #hud { position: absolute; top: 20px; width: 800px; display: flex; justify-content: space-between; font-family: 'Black Ops One', cursive; pointer-events: none; z-index: 5; }
         .score-box { font-size: 60px; text-shadow: 4px 4px 0 #000; }
+        
+        #win-message { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 100px; font-family: 'Black Ops One'; color: gold; text-shadow: 0 0 20px #000; display: none; z-index: 20; }
     </style>
 </head>
 <body>
@@ -68,8 +54,7 @@
         <h1>ОЖИДАНИЕ...</h1>
         <div id="invite-section" class="hidden" style="text-align: center;">
             <p>Отправь эту ссылку другу:</p>
-            <div id="invite-link" class="link-box" onclick="copyLink()">Генерация ссылки...</div>
-            <p style="font-size: 12px; color: #aaa; margin-top: 5px;">(Нажми на ссылку, чтобы скопировать)</p>
+            <div id="invite-link" class="link-box" onclick="copyLink()">Генерация...</div>
         </div>
         <button class="btn btn-secondary" onclick="location.reload()" style="margin-top: 30px;">НАЗАД</button>
     </div>
@@ -79,6 +64,7 @@
             <div style="color: #3498db" class="score-box" id="scoreLeft">0</div>
             <div style="color: #e74c3c" class="score-box" id="scoreRight">0</div>
         </div>
+        <div id="win-message">ПОБЕДА!</div>
     </div>
 
 <script>
@@ -90,84 +76,48 @@
     let ball;
     let engine, render, runner;
     
-    // Переменные для физики
+    // Переменные состояния
     let jumpCount = 0;
     const MAX_JUMPS = 2;
     let lastKeyPress = { key: '', time: 0 };
     let shakeDuration = 0;
+    let isFrozen = false; // Мяч заморожен перед подачей?
+    let myTurnToServe = false; // Моя ли очередь подавать?
 
-    // --- ЛОГИКА МЕНЮ ---
-
-    // 1. Выбор скина
-    function selectSkin(color, el) {
-        mySkin = color;
-        document.querySelectorAll('.skin-option').forEach(d => d.classList.remove('selected'));
-        el.classList.add('selected');
-    }
-
-    // 2. Проверка ссылки при входе
+    // --- МЕНЮ ---
+    function selectSkin(color, el) { mySkin = color; document.querySelectorAll('.skin-option').forEach(d => d.classList.remove('selected')); el.classList.add('selected'); }
     const urlParams = new URLSearchParams(window.location.search);
     const roomFromUrl = urlParams.get('room');
-
     if (roomFromUrl) {
         document.getElementById('menu-screen').innerHTML = "<h1>ПОДКЛЮЧЕНИЕ...</h1>";
-        setTimeout(() => {
-            socket.emit('findMatch', { mode: 'private', roomId: roomFromUrl, skin: mySkin });
-        }, 500);
+        setTimeout(() => socket.emit('findMatch', { mode: 'private', roomId: roomFromUrl, skin: mySkin }), 500);
     }
-
-    // 3. Кнопки поиска
     function findGame(mode) {
         document.getElementById('menu-screen').classList.add('hidden');
         document.getElementById('wait-screen').classList.remove('hidden');
-        
         socket.emit('findMatch', { mode: mode, skin: mySkin });
     }
-
-    // 4. Ожидание
     socket.on('waiting', (data) => {
         if (data.roomId) {
-            // Показываем ссылку для друга
             document.getElementById('invite-section').classList.remove('hidden');
-            const link = `${window.location.origin}/?room=${data.roomId}`;
-            document.getElementById('invite-link').innerText = link;
-        } else {
-            // Просто ждем (случайный поиск)
-            document.querySelector('#wait-screen h1').innerText = "ПОИСК ИГРОКА...";
+            document.getElementById('invite-link').innerText = `${window.location.origin}/?room=${data.roomId}`;
         }
     });
+    function copyLink() { navigator.clipboard.writeText(document.getElementById('invite-link').innerText).then(() => alert("Ссылка скопирована!")); }
 
-    function copyLink() {
-        const text = document.getElementById('invite-link').innerText;
-        navigator.clipboard.writeText(text).then(() => alert("Ссылка скопирована!"));
-    }
-
-    // --- ЛОГИКА ИГРЫ (START) ---
-
+    // --- СЕТЬ ---
     socket.on('gameStart', (data) => {
-        // Скрываем меню, показываем игру
         document.querySelectorAll('.screen').forEach(el => el.classList.add('hidden'));
         document.getElementById('game-container').style.display = 'flex';
-
-        myId = socket.id;
-        mySide = data.self.side;
-        
+        myId = socket.id; mySide = data.self.side;
         initGame();
-        
-        // Спавн игроков
         createPlayer(myId, data.self.x, data.self.y, data.self.skin, true);
         data.opponents.forEach(p => createPlayer(p.id, p.x, p.y, p.skin, false));
     });
-
     socket.on('playerJoined', p => createPlayer(p.id, p.x, p.y, p.skin, false));
+    socket.on('playerLeft', id => { if(playersMap[id]) { Matter.Composite.remove(engine.world, playersMap[id]); delete playersMap[id]; } });
     
-    socket.on('playerLeft', id => { 
-        if(playersMap[id]) { 
-            Matter.Composite.remove(engine.world, playersMap[id]); 
-            delete playersMap[id]; 
-        } 
-    });
-
+    // Плавная синхронизация игрока
     socket.on('updatePlayer', (data) => {
         if (playersMap[data.id]) {
             Matter.Body.setPosition(playersMap[data.id], { 
@@ -177,11 +127,19 @@
         }
     });
 
+    // Синхронизация мяча
     socket.on('updateBall', (data) => {
-        if (playersMap[myId] && calculateDistance(playersMap[myId].position, ball.position) > 150) {
+        // Если я далеко, верю серверу. Если мяч заморожен, тоже верю серверу.
+        if (isFrozen || (playersMap[myId] && calculateDistance(playersMap[myId].position, ball.position) > 150)) {
              Matter.Body.setPosition(ball, { x: data.x, y: data.y });
              Matter.Body.setVelocity(ball, { x: data.vx, y: data.vy });
         }
+    });
+
+    socket.on('ballServed', () => {
+        isFrozen = false;
+        myTurnToServe = false;
+        Matter.Body.setStatic(ball, false);
     });
 
     socket.on('scoreUpdate', s => { 
@@ -189,19 +147,39 @@
         document.getElementById('scoreRight').innerText = s.right; 
     });
 
-    socket.on('resetRound', pos => { 
-        Matter.Body.setPosition(ball, pos); 
-        Matter.Body.setVelocity(ball, { x: 0, y: 0 }); 
-        Matter.Body.setAngularVelocity(ball, 0); 
+    socket.on('gameOver', winner => {
+        const msg = document.getElementById('win-message');
+        msg.innerText = (winner === mySide ? "ТЫ ВЫИГРАЛ!" : "ТЫ ПРОИГРАЛ");
+        msg.style.display = 'block';
+        setTimeout(() => msg.style.display = 'none', 3000);
     });
 
-    // --- ФИЗИКА (MATTER.JS) ---
+    // Сброс раунда (спавн мяча)
+    socket.on('resetRound', data => { 
+        Matter.Body.setPosition(ball, { x: data.x, y: data.y }); 
+        Matter.Body.setVelocity(ball, { x: 0, y: 0 }); 
+        Matter.Body.setAngularVelocity(ball, 0); 
+        
+        if (data.serveSide) {
+            isFrozen = true;
+            Matter.Body.setStatic(ball, true); // Замораживаем мяч
+            if (data.serveSide === mySide) {
+                myTurnToServe = true; // Теперь я должен двинуться, чтобы разморозить
+            }
+        } else {
+            // Если serveSide null (начало игры или ничья), мяч просто падает
+            isFrozen = false;
+            Matter.Body.setStatic(ball, false);
+        }
+    });
 
+    // --- ФИЗИКА ---
     function initGame() {
         const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
-        
         engine = Engine.create();
-        engine.world.gravity.y = 1.4;
+        
+        // 1. Усиленная гравитация для четкости прыжка
+        engine.world.gravity.y = 1.6; 
 
         render = Render.create({
             element: document.getElementById('game-container'),
@@ -209,43 +187,82 @@
             options: { width: 800, height: 600, wireframes: false, background: 'transparent' }
         });
 
+        // Категории для фильтрации (битовая маска)
+        const CAT_DEFAULT = 0x0001;
+        const CAT_PLAYER = 0x0002;
+        const CAT_BARRIER = 0x0004;
+        const CAT_BALL = 0x0008;
+
+        // Стены
         const ground = Bodies.rectangle(400, 610, 810, 60, { isStatic: true, render: { fillStyle: '#555' }, label: 'ground' });
-        const leftWall = Bodies.rectangle(-10, 300, 20, 600, { isStatic: true, label: 'wall' });
-        const rightWall = Bodies.rectangle(810, 300, 20, 600, { isStatic: true, label: 'wall' });
-        const net = Bodies.rectangle(400, 520, 10, 180, { isStatic: true, render: { fillStyle: '#fff' }, chamfer: { radius: 5 } });
+        const leftWall = Bodies.rectangle(-10, 300, 20, 600, { isStatic: true });
+        const rightWall = Bodies.rectangle(810, 300, 20, 600, { isStatic: true });
         
-        ball = Bodies.circle(400, 150, 20, { 
-            restitution: 0.9, friction: 0.005, frictionAir: 0.015, density: 0.05,
-            render: { fillStyle: '#f1c40f' }
+        // Сетка (нижняя часть - твердая для всех)
+        const netBase = Bodies.rectangle(400, 520, 10, 180, { isStatic: true, render: { fillStyle: '#fff' }, chamfer: { radius: 5 } });
+        
+        // БАРЬЕР (Невидимая стена над сеткой)
+        // Блокирует игроков, но пропускает мяч
+        const barrier = Bodies.rectangle(400, 200, 10, 460, { 
+            isStatic: true, 
+            render: { visible: false }, // Невидимый
+            collisionFilter: {
+                category: CAT_BARRIER,
+                mask: CAT_PLAYER // Ставим маску: сталкивается ТОЛЬКО с игроками
+            }
         });
 
-        Composite.add(engine.world, [ground, leftWall, rightWall, net, ball]);
+        // Мяч (Плавный)
+        ball = Bodies.circle(400, 150, 20, { 
+            restitution: 0.9, // Прыгучесть
+            friction: 0.001,
+            frictionAir: 0.001, // Меньше сопротивления воздуха = плавнее полет
+            render: { fillStyle: '#f1c40f' },
+            collisionFilter: {
+                category: CAT_BALL,
+                mask: CAT_DEFAULT | CAT_PLAYER // Сталкивается со всем, КРОМЕ барьера
+            }
+        });
+
+        Composite.add(engine.world, [ground, leftWall, rightWall, netBase, barrier, ball]);
 
         // Управление
         const keys = {};
         window.addEventListener('keydown', e => {
             keys[e.code] = true;
+            
+            // Если моя очередь подавать и я нажал кнопку - размораживаем мяч
+            if (myTurnToServe && isFrozen && ['ArrowLeft','ArrowRight','ArrowUp','KeyA','KeyD','KeyW','Space'].includes(e.code)) {
+                socket.emit('serve');
+                myTurnToServe = false;
+                isFrozen = false;
+                Body.setStatic(ball, false);
+            }
+
             // Рывок
             const now = Date.now();
             if (lastKeyPress.key === e.code && now - lastKeyPress.time < 300 && playersMap[myId]) {
-                const force = 0.2;
+                const force = 0.35; // Мощный рывок
                 if (e.code === 'ArrowLeft' || e.code === 'KeyA') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: -force, y: 0 });
                 if (e.code === 'ArrowRight' || e.code === 'KeyD') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: force, y: 0 });
                 lastKeyPress.key = '';
             } else {
                 lastKeyPress = { key: e.code, time: now };
             }
-            // Прыжок
+
+            // Прыжок (постоянная высота)
             if ((e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') && playersMap[myId]) {
                 if (jumpCount < MAX_JUMPS) {
-                    Body.setVelocity(playersMap[myId], { x: playersMap[myId].velocity.x, y: -16 });
+                    // Сбрасываем вертикальную скорость перед прыжком для стабильности
+                    Body.setVelocity(playersMap[myId], { x: playersMap[myId].velocity.x, y: 0 });
+                    Body.applyForce(playersMap[myId], playersMap[myId].position, { x: 0, y: -0.45 }); // Резкая сила вверх
                     jumpCount++;
                 }
             }
         });
         window.addEventListener('keyup', e => keys[e.code] = false);
 
-        // Сброс прыжков
+        // Сброс прыжков при касании земли
         Events.on(engine, 'collisionStart', (event) => {
             event.pairs.forEach(pair => {
                 if (playersMap[myId] && (pair.bodyA === playersMap[myId] || pair.bodyB === playersMap[myId])) {
@@ -255,31 +272,37 @@
             });
         });
 
-        // Loop
+        // Игровой цикл
         Events.on(engine, 'afterUpdate', () => {
             if (!playersMap[myId]) return;
             const me = playersMap[myId];
-            const speed = 7;
+            const speed = 8; // Быстрее бег
 
             if (keys['ArrowLeft'] || keys['KeyA']) Body.setVelocity(me, { x: -speed, y: me.velocity.y });
             else if (keys['ArrowRight'] || keys['KeyD']) Body.setVelocity(me, { x: speed, y: me.velocity.y });
-            else Body.setVelocity(me, { x: me.velocity.x * 0.9, y: me.velocity.y });
+            else Body.setVelocity(me, { x: me.velocity.x * 0.85, y: me.velocity.y }); // Быстрое торможение
             
             Body.setAngle(me, 0);
 
+            // Отправка данных
             socket.emit('move', { x: me.position.x, y: me.position.y, vx: me.velocity.x, vy: me.velocity.y });
 
-            if (calculateDistance(me.position, ball.position) < 150) {
+            if (!isFrozen && calculateDistance(me.position, ball.position) < 150) {
                 socket.emit('syncBall', { x: ball.position.x, y: ball.position.y, vx: ball.velocity.x, vy: ball.velocity.y });
             }
 
-            if (mySide === 'left' && ball.position.y > 580) {
+            // Гол: если я пропустил мяч на своей стороне (коснулся пола)
+            if (mySide === 'left' && ball.position.x < 400 && ball.position.y > 580) {
                 triggerShake();
-                socket.emit('goal', ball.position.x < 400 ? 'right' : 'left');
+                socket.emit('goal', 'left'); // Я проиграл очко
+            }
+            if (mySide === 'right' && ball.position.x > 400 && ball.position.y > 580) {
+                triggerShake();
+                socket.emit('goal', 'right'); // Я проиграл очко
             }
         });
 
-        // Тряска
+        // Эффект тряски
         Events.on(render, 'beforeRender', () => {
              if (shakeDuration > 0) {
                 const dx = (Math.random() - 0.5) * 15;
@@ -297,10 +320,14 @@
 
     function createPlayer(id, x, y, color, isMe) {
         if(playersMap[id]) return;
-        const p = Matter.Bodies.circle(x, y, 30, { 
+        const p = Matter.Bodies.circle(x, y, 40, { // РАДИУС 40 (большие модельки)
             friction: 0, frictionAir: 0.05, restitution: 0, 
             render: { fillStyle: color || '#999', strokeStyle: '#fff', lineWidth: isMe ? 3 : 0 },
-            label: isMe ? 'me' : 'enemy'
+            collisionFilter: {
+                category: 0x0002, // CAT_PLAYER
+                // Маска: сталкивается со всем (стены, мяч, барьер)
+                mask: 0x0001 | 0x0004 | 0x0008 
+            }
         });
         playersMap[id] = p; 
         Matter.Composite.add(engine.world, p);

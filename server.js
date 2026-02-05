@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-// Используем старый формат require для совместимости с версией 8.3.2
+// Используем старую версию uuid для совместимости
 const { v4: uuidv4 } = require('uuid'); 
 
 const app = express();
@@ -16,7 +16,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 let rooms = {};
 let queue = [];
 
-const SPAWN = { ball: { x: 400, y: 150 } };
+// Координаты спавна мяча (теперь зависят от стороны)
+const SPAWN_HEIGHT = 200;
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
@@ -25,7 +26,7 @@ io.on('connection', (socket) => {
         let targetRoomID;
         let side = 'left';
 
-        // 1. Случайный поиск
+        // Логика поиска (Random / Private)
         if (mode === 'random') {
             if (queue.length > 0) {
                 targetRoomID = queue.shift();
@@ -34,9 +35,7 @@ io.on('connection', (socket) => {
                 targetRoomID = uuidv4();
                 queue.push(targetRoomID);
             }
-        } 
-        // 2. Игра с другом
-        else if (mode === 'private') {
+        } else if (mode === 'private') {
             if (roomId && rooms[roomId] && rooms[roomId].players.length < 2) {
                 targetRoomID = roomId;
                 side = 'right';
@@ -52,23 +51,18 @@ io.on('connection', (socket) => {
         socket.join(roomID);
 
         if (!rooms[roomID]) {
-            rooms[roomID] = { players: [], score: { left: 0, right: 0 } };
+            rooms[roomID] = { players: [], score: { left: 0, right: 0 }, gameActive: true };
         }
 
         const player = { id: socket.id, side, skin, x: side === 'left' ? 200 : 600, y: 500 };
         rooms[roomID].players.push(player);
 
-        // Если это первый игрок - ждем
+        // Старт игры или ожидание
         if (rooms[roomID].players.length === 1) {
             socket.emit('waiting', { roomId: roomID });
         } else {
-            // Если второй - начинаем
             const opponent = rooms[roomID].players.find(p => p.id !== socket.id);
-            
-            // Стартуем нас
             socket.emit('gameStart', { roomId: roomID, self: player, opponents: [opponent] });
-            
-            // Стартуем соперника
             socket.to(roomID).emit('gameStart', { roomId: roomID, self: opponent, opponents: [player] });
         }
         
@@ -78,19 +72,49 @@ io.on('connection', (socket) => {
                 socket.to(roomID).emit('playerLeft', socket.id);
                 if (rooms[roomID].players.length === 0) {
                     delete rooms[roomID];
-                    // Убрать из очереди, если он там был
                     queue = queue.filter(id => id !== roomID);
                 }
             }
         });
 
+        // Движение игроков
         socket.on('move', d => socket.to(roomID).emit('updatePlayer', { id: socket.id, ...d }));
+        
+        // Синхронизация мяча
         socket.on('syncBall', d => socket.to(roomID).emit('updateBall', d));
-        socket.on('goal', side => {
-            if (rooms[roomID]) {
-                rooms[roomID].score[side]++;
+        
+        // Разморозка мяча (подача)
+        socket.on('serve', () => {
+            io.to(roomID).emit('ballServed');
+        });
+
+        // Гол
+        socket.on('goal', (loserSide) => {
+            if (!rooms[roomID]) return;
+
+            // Очко получает ПРОТИВНИК проигравшего
+            const winnerSide = loserSide === 'left' ? 'right' : 'left';
+            rooms[roomID].score[winnerSide]++;
+            
+            // Проверка победы (до 11)
+            if (rooms[roomID].score[winnerSide] >= 11) {
+                io.to(roomID).emit('gameOver', winnerSide);
+                rooms[roomID].score = { left: 0, right: 0 }; // Сброс счета
                 io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
-                io.to(roomID).emit('resetRound', SPAWN.ball);
+                // Мяч в центр после конца игры
+                io.to(roomID).emit('resetRound', { x: 400, y: 150, serveSide: null });
+            } else {
+                io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
+                
+                // Мяч спавнится над ПРОИГРАВШИМ (loserSide)
+                const spawnX = loserSide === 'left' ? 200 : 600;
+                
+                // Отправляем команду рестарта раунда с указанием, чья очередь подавать (двигаться)
+                io.to(roomID).emit('resetRound', { 
+                    x: spawnX, 
+                    y: SPAWN_HEIGHT, 
+                    serveSide: loserSide 
+                });
             }
         });
     }
