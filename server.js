@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-// Используем старую версию uuid для совместимости
 const { v4: uuidv4 } = require('uuid'); 
 
 const app = express();
@@ -16,7 +15,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 let rooms = {};
 let queue = [];
 
-// Координаты спавна мяча (теперь зависят от стороны)
+// Высота, на которой появляется мяч (над головой)
 const SPAWN_HEIGHT = 200;
 
 io.on('connection', (socket) => {
@@ -26,7 +25,6 @@ io.on('connection', (socket) => {
         let targetRoomID;
         let side = 'left';
 
-        // Логика поиска (Random / Private)
         if (mode === 'random') {
             if (queue.length > 0) {
                 targetRoomID = queue.shift();
@@ -43,21 +41,18 @@ io.on('connection', (socket) => {
                 targetRoomID = uuidv4();
             }
         }
-
         joinRoom(socket, targetRoomID, side, skin);
     });
 
     function joinRoom(socket, roomID, side, skin) {
         socket.join(roomID);
-
         if (!rooms[roomID]) {
-            rooms[roomID] = { players: [], score: { left: 0, right: 0 }, gameActive: true };
+            rooms[roomID] = { players: [], score: { left: 0, right: 0 } };
         }
 
         const player = { id: socket.id, side, skin, x: side === 'left' ? 200 : 600, y: 500 };
         rooms[roomID].players.push(player);
 
-        // Старт игры или ожидание
         if (rooms[roomID].players.length === 1) {
             socket.emit('waiting', { roomId: roomID });
         } else {
@@ -77,39 +72,30 @@ io.on('connection', (socket) => {
             }
         });
 
-        // Движение игроков
         socket.on('move', d => socket.to(roomID).emit('updatePlayer', { id: socket.id, ...d }));
-        
-        // Синхронизация мяча
         socket.on('syncBall', d => socket.to(roomID).emit('updateBall', d));
-        
-        // Разморозка мяча (подача)
-        socket.on('serve', () => {
-            io.to(roomID).emit('ballServed');
-        });
+        socket.on('serve', () => io.to(roomID).emit('ballServed'));
 
-        // Гол
+        // ГЛАВНАЯ ЛОГИКА ГОЛА
         socket.on('goal', (loserSide) => {
             if (!rooms[roomID]) return;
 
-            // Очко получает ПРОТИВНИК проигравшего
+            // Очко победителю
             const winnerSide = loserSide === 'left' ? 'right' : 'left';
             rooms[roomID].score[winnerSide]++;
             
-            // Проверка победы (до 11)
+            // Если победа (11 очков)
             if (rooms[roomID].score[winnerSide] >= 11) {
                 io.to(roomID).emit('gameOver', winnerSide);
-                rooms[roomID].score = { left: 0, right: 0 }; // Сброс счета
+                rooms[roomID].score = { left: 0, right: 0 }; 
                 io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
-                // Мяч в центр после конца игры
                 io.to(roomID).emit('resetRound', { x: 400, y: 150, serveSide: null });
             } else {
                 io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
                 
-                // Мяч спавнится над ПРОИГРАВШИМ (loserSide)
+                // СПАВН: Если проиграл левый (loserSide='left'), мяч спавнится слева (x=200)
                 const spawnX = loserSide === 'left' ? 200 : 600;
                 
-                // Отправляем команду рестарта раунда с указанием, чья очередь подавать (двигаться)
                 io.to(roomID).emit('resetRound', { 
                     x: spawnX, 
                     y: SPAWN_HEIGHT, 
