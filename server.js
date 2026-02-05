@@ -2,91 +2,127 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const { v4: uuidv4 } = require('uuid'); // Для генерации уникальных ссылок
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// Раздаем файлы из папки public
 app.use(express.static(path.join(__dirname, 'public')));
 
-let players = {};
-let score = { left: 0, right: 0 };
+// Хранилище комнат: { roomId: { players: [], score: {}, ball: {} } }
+let rooms = {};
+let queue = []; // Очередь для случайного поиска
 
-// Начальные позиции
 const SPAWN = {
-    ball: { x: 400, y: 100 },
+    ball: { x: 400, y: 150 },
     left: { x: 200, y: 500 },
     right: { x: 600, y: 500 }
 };
 
 io.on('connection', (socket) => {
-    console.log('Player connected:', socket.id);
-    
-    // Определяем сторону: первый - слева, второй - справа
-    const side = Object.keys(players).length === 0 ? 'left' : 'right';
-    
-    // Если уже 2 игрока, третий будет зрителем (spectator)
-    if (Object.keys(players).length >= 2) {
-        socket.emit('full', true);
-        return;
+    console.log('User connected:', socket.id);
+
+    // 1. Игрок ищет матч или создает приватный
+    socket.on('findMatch', ({ skin, mode, roomId }) => {
+        let roomID;
+        let side = 'left';
+
+        if (mode === 'random') {
+            // Логика быстрого поиска
+            if (queue.length > 0) {
+                roomID = queue.shift();
+                side = 'right';
+            } else {
+                roomID = uuidv4();
+                queue.push(roomID);
+            }
+        } else if (mode === 'private') {
+            // Если roomId пришел с клиентом (он прошел по ссылке)
+            if (roomId && rooms[roomId] && rooms[roomId].players.length < 2) {
+                roomID = roomId;
+                side = 'right';
+            } else {
+                // Создаем новую комнату
+                roomID = uuidv4();
+            }
+        }
+
+        joinRoom(socket, roomID, side, skin);
+    });
+
+    function joinRoom(socket, roomID, side, skin) {
+        socket.join(roomID);
+
+        // Инициализация комнаты, если нет
+        if (!rooms[roomID]) {
+            rooms[roomID] = {
+                players: [],
+                score: { left: 0, right: 0 }
+            };
+        }
+
+        const player = { id: socket.id, side, skin, x: side === 'left' ? 200 : 600, y: 500 };
+        rooms[roomID].players.push(player);
+
+        // Сообщаем клиенту, что он в игре
+        socket.emit('gameStart', { 
+            roomId: roomID, 
+            self: player, 
+            opponents: rooms[roomID].players.filter(p => p.id !== socket.id) 
+        });
+
+        // Если это второй игрок — уведомляем первого
+        if (rooms[roomID].players.length === 2) {
+            socket.to(roomID).emit('playerJoined', player);
+            io.to(roomID).emit('ready', true); // Начинаем
+        } else {
+            // Ждем игрока
+            socket.emit('waiting', { link: roomID });
+        }
+        
+        // Обработка дисконнекта
+        socket.on('disconnect', () => {
+            leaveRoom(socket, roomID);
+        });
+        
+        // Обработка движений внутри комнаты
+        socket.on('move', (data) => {
+            socket.to(roomID).emit('updatePlayer', { id: socket.id, ...data });
+        });
+
+        socket.on('syncBall', (data) => {
+            socket.to(roomID).emit('updateBall', data);
+        });
+
+        socket.on('goal', (winnerSide) => {
+            if (rooms[roomID]) {
+                rooms[roomID].score[winnerSide]++;
+                io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
+                io.to(roomID).emit('resetRound', SPAWN.ball);
+            }
+        });
     }
 
-    players[socket.id] = { 
-        id: socket.id,
-        side: side, 
-        x: side === 'left' ? SPAWN.left.x : SPAWN.right.x, 
-        y: 500 
-    };
+    function leaveRoom(socket, roomID) {
+        // Убираем из очереди, если он там был
+        queue = queue.filter(id => id !== roomID);
 
-    // Отправляем игроку текущее состояние мира
-    socket.emit('init', { 
-        self: players[socket.id], 
-        players: players, 
-        score: score 
-    });
-
-    // Сообщаем всем, что зашел новый игрок
-    socket.broadcast.emit('playerJoined', players[socket.id]);
-
-    // Обработка движения
-    socket.on('move', (coords) => {
-        if (players[socket.id]) {
-            players[socket.id].x = coords.x;
-            players[socket.id].y = coords.y;
-            socket.broadcast.emit('updatePlayer', { id: socket.id, x: coords.x, y: coords.y });
+        if (rooms[roomID]) {
+            rooms[roomID].players = rooms[roomID].players.filter(p => p.id !== socket.id);
+            io.to(roomID).emit('playerLeft', socket.id);
+            
+            // Если комната пуста, удаляем её
+            if (rooms[roomID].players.length === 0) {
+                delete rooms[roomID];
+            }
         }
-    });
-
-    // Синхронизация мяча (от клиента к остальным)
-    socket.on('syncBall', (data) => {
-        socket.broadcast.emit('updateBall', data);
-    });
-
-    // Обработка гола (Клиент сообщает "Я увидел гол")
-    socket.on('goal', (winnerSide) => {
-        score[winnerSide]++;
-        io.emit('scoreUpdate', score);
-        io.emit('resetRound', SPAWN.ball); // Сброс мяча в центр
-    });
-
-    socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-        delete players[socket.id];
-        io.emit('playerLeft', socket.id);
-        // Сброс счета если все вышли
-        if (Object.keys(players).length === 0) {
-            score = { left: 0, right: 0 };
-        }
-    });
+    }
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`TremorBall server running on port ${PORT}`);
+    console.log(`TremorBall Server v2 running on port ${PORT}`);
 });

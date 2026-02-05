@@ -2,223 +2,347 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>TremorBall Online</title>
+    <title>TremorBall v2.0</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
     <style>
-        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Arial', sans-serif; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
-        canvas { border: 4px solid #444; box-shadow: 0 0 30px rgba(0,0,0,0.5); background: #333; }
-        #ui { position: absolute; top: 20px; width: 800px; display: flex; justify-content: space-between; font-size: 24px; font-weight: bold; pointer-events: none; }
-        .score { font-size: 48px; text-shadow: 2px 2px 0 #000; }
-        #status { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 32px; background: rgba(0,0,0,0.7); padding: 20px; border-radius: 10px; display: none; }
+        @import url('https://fonts.googleapis.com/css2?family=Black+Ops+One&family=Roboto:wght@400;700&display=swap');
+
+        body { margin: 0; background: #121212; color: white; font-family: 'Roboto', sans-serif; overflow: hidden; }
+        
+        /* UI Layers */
+        #game-container { display: none; position: relative; width: 100vw; height: 100vh; justify-content: center; align-items: center; }
+        
+        canvas { 
+            border: 4px solid #444; 
+            box-shadow: 0 0 50px rgba(0,0,0,0.8); 
+            background: radial-gradient(circle, #333 0%, #111 100%);
+            border-radius: 8px;
+        }
+
+        /* HUD */
+        #hud { position: absolute; top: 20px; width: 800px; display: flex; justify-content: space-between; font-family: 'Black Ops One', cursive; pointer-events: none; }
+        .score-box { font-size: 60px; text-shadow: 4px 4px 0 #000; }
+        
+        /* MENUS */
+        .menu-screen { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: linear-gradient(135deg, #1a2a6c, #b21f1f, #fdbb2d);
+            z-index: 10;
+        }
+
+        h1 { font-family: 'Black Ops One', cursive; font-size: 80px; margin-bottom: 20px; text-shadow: 0 10px 20px rgba(0,0,0,0.5); }
+        
+        .btn {
+            padding: 15px 40px; margin: 10px; font-size: 24px; font-weight: bold;
+            background: white; border: none; border-radius: 50px; cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-family: 'Black Ops One', cursive; text-transform: uppercase;
+        }
+        .btn:hover { transform: scale(1.1); box-shadow: 0 0 20px white; }
+        .btn-secondary { background: #333; color: white; font-size: 18px; }
+
+        /* Skin Selector */
+        .skin-selector { display: flex; gap: 10px; margin-bottom: 30px; }
+        .skin-option { width: 50px; height: 50px; border-radius: 50%; border: 3px solid white; cursor: pointer; transition: transform 0.2s; }
+        .skin-option:hover { transform: scale(1.2); }
+        .skin-option.selected { box-shadow: 0 0 15px #fff; border-color: yellow; transform: scale(1.3); }
+
+        #waiting-screen { display: none; text-align: center; }
+        .link-box { background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; font-family: monospace; margin-top: 10px; user-select: all; }
     </style>
 </head>
 <body>
 
-<div id="ui">
-    <div style="color: #3498db">ИГРОК 1: <span id="scoreLeft" class="score">0</span></div>
-    <div style="color: #e74c3c">ИГРОК 2: <span id="scoreRight" class="score">0</span></div>
-</div>
-<div id="status">Ожидание игрока...</div>
+    <div id="main-menu" class="menu-screen">
+        <h1>TREMOR BALL</h1>
+        
+        <p>ВЫБЕРИ ЦВЕТ:</p>
+        <div class="skin-selector">
+            <div class="skin-option selected" style="background: #3498db" onclick="selectSkin('#3498db', this)"></div>
+            <div class="skin-option" style="background: #e74c3c" onclick="selectSkin('#e74c3c', this)"></div>
+            <div class="skin-option" style="background: #2ecc71" onclick="selectSkin('#2ecc71', this)"></div>
+            <div class="skin-option" style="background: #f1c40f" onclick="selectSkin('#f1c40f', this)"></div>
+            <div class="skin-option" style="background: #9b59b6" onclick="selectSkin('#9b59b6', this)"></div>
+        </div>
+
+        <button class="btn" onclick="startGame('random')">НАЙТИ ИГРУ</button>
+        <button class="btn btn-secondary" onclick="startGame('private')">ИГРАТЬ С ДРУГОМ</button>
+    </div>
+
+    <div id="waiting-screen" class="menu-screen">
+        <h1>ОЖИДАНИЕ...</h1>
+        <div id="private-link-container" style="display:none">
+            <p>Отправь эту ссылку другу:</p>
+            <div class="link-box" id="invite-link">...</div>
+        </div>
+        <button class="btn btn-secondary" onclick="location.reload()">ОТМЕНА</button>
+    </div>
+
+    <div id="game-container">
+        <div id="hud">
+            <div style="color: #3498db" class="score-box" id="scoreLeft">0</div>
+            <div style="color: #e74c3c" class="score-box" id="scoreRight">0</div>
+        </div>
+        </div>
 
 <script>
     const socket = io();
-    
-    // --- НАСТРОЙКИ MATTER.JS ---
-    const { Engine, Render, Runner, Bodies, Composite, Body, Vector, Events } = Matter;
-    
-    const engine = Engine.create();
-    engine.world.gravity.y = 1.2; // Чуть тяжелее гравитация для динамики
-    
-    const render = Render.create({
-        element: document.body,
-        engine: engine,
-        options: {
-            width: 800,
-            height: 600,
-            wireframes: false,
-            background: 'transparent' // Чтобы видеть наш CSS фон
-        }
-    });
-
-    // --- ОБЪЕКТЫ ---
-    // Стены (чтобы мяч не улетал)
-    const ground = Bodies.rectangle(400, 610, 810, 60, { isStatic: true, render: { fillStyle: '#555' }, label: 'ground' });
-    const leftWall = Bodies.rectangle(-10, 300, 20, 600, { isStatic: true });
-    const rightWall = Bodies.rectangle(810, 300, 20, 600, { isStatic: true });
-    const ceiling = Bodies.rectangle(400, -500, 810, 100, { isStatic: true }); // Высокий потолок
-    
-    // Сетка
-    const net = Bodies.rectangle(400, 520, 10, 180, { 
-        isStatic: true, 
-        render: { fillStyle: '#fff' },
-        chamfer: { radius: 5 } // Закругленные края
-    });
-
-    // Мяч
-    let ball = Bodies.circle(400, 100, 20, { 
-        restitution: 0.95, // Прыгучесть
-        friction: 0.005,
-        frictionAir: 0.02,
-        render: { fillStyle: '#f1c40f' },
-        label: 'ball'
-    });
-
-    // Игроки (создаются пустыми, обновляются сервером)
+    let mySkin = '#3498db';
     let myId = null;
     let mySide = null;
-    let playersMap = {}; // Хранит тела Matter.js
+    let roomId = null;
     
-    Composite.add(engine.world, [ground, leftWall, rightWall, ceiling, net, ball]);
+    // Physics Globals
+    let engine, render, runner;
+    let playersMap = {}; 
+    let ball;
+    
+    // Movement State
+    let jumpCount = 0;
+    const MAX_JUMPS = 2;
+    let lastKeyPress = { key: '', time: 0 }; // Для рывка
 
-    // --- УПРАВЛЕНИЕ ---
-    const keys = {};
-    window.addEventListener('keydown', e => keys[e.code] = true);
-    window.addEventListener('keyup', e => keys[e.code] = false);
+    // --- MENU LOGIC ---
+    
+    // Проверка, пришли ли мы по ссылке приглашения
+    const urlParams = new URLSearchParams(window.location.search);
+    const inviteRoomId = urlParams.get('room');
 
-    // --- ТРЯСКА ЭКРАНА (TREMOR EFFECT) ---
-    let shakeDuration = 0;
-    function triggerShake() {
-        shakeDuration = 15; // Кадров тряски
+    if (inviteRoomId) {
+        document.getElementById('main-menu').innerHTML = `<h1>ПОДКЛЮЧЕНИЕ...</h1>`;
+        setTimeout(() => {
+            startGame('private', inviteRoomId);
+        }, 1000);
     }
 
-    Events.on(render, 'beforeRender', function() {
-        if (shakeDuration > 0) {
-            const dx = (Math.random() - 0.5) * 10;
-            const dy = (Math.random() - 0.5) * 10;
-            render.canvas.style.transform = `translate(${dx}px, ${dy}px)`;
-            shakeDuration--;
-        } else {
-            render.canvas.style.transform = 'none';
+    function selectSkin(color, el) {
+        mySkin = color;
+        document.querySelectorAll('.skin-option').forEach(d => d.classList.remove('selected'));
+        el.classList.add('selected');
+    }
+
+    function startGame(mode, existingRoomId = null) {
+        document.getElementById('main-menu').style.display = 'none';
+        document.getElementById('waiting-screen').style.display = 'flex';
+        
+        socket.emit('findMatch', { skin: mySkin, mode: mode, roomId: existingRoomId });
+    }
+
+    socket.on('waiting', (data) => {
+        if (data.link) {
+            document.getElementById('private-link-container').style.display = 'block';
+            const link = `${window.location.origin}/?room=${data.link}`;
+            document.getElementById('invite-link').innerText = link;
         }
     });
 
-    // --- СЕТЕВАЯ ЛОГИКА ---
-    
-    socket.on('init', (data) => {
+    socket.on('gameStart', (data) => {
+        roomId = data.roomId;
         myId = socket.id;
         mySide = data.self.side;
-        updateScore(data.score);
-        document.getElementById('status').style.display = 'none';
-
-        // Создаем своего игрока
-        createPlayer(myId, data.self.x, data.self.y, true);
-
-        // Создаем соперника, если он уже есть
-        for (let id in data.players) {
-            if (id !== myId) {
-                createPlayer(id, data.players[id].x, data.players[id].y, false);
-            }
-        }
+        
+        // Hide Menus, Show Game
+        document.getElementById('waiting-screen').style.display = 'none';
+        document.getElementById('main-menu').style.display = 'none';
+        document.getElementById('game-container').style.display = 'flex';
+        
+        initGame();
+        
+        // Spawn me
+        createPlayer(myId, data.self.x, data.self.y, data.self.skin, true);
+        
+        // Spawn opponents
+        data.opponents.forEach(p => createPlayer(p.id, p.x, p.y, p.skin, false));
     });
 
     socket.on('playerJoined', (p) => {
-        createPlayer(p.id, p.x, p.y, false);
+        createPlayer(p.id, p.x, p.y, p.skin, false);
     });
 
     socket.on('playerLeft', (id) => {
         if (playersMap[id]) {
-            Composite.remove(engine.world, playersMap[id]);
+            Matter.Composite.remove(engine.world, playersMap[id]);
             delete playersMap[id];
         }
     });
 
-    socket.on('updatePlayer', (data) => {
-        if (playersMap[data.id]) {
-            // Плавная интерполяция для врага
-            Body.setPosition(playersMap[data.id], { x: data.x, y: data.y });
-        }
-    });
+    // --- GAME & PHYSICS ENGINE ---
 
-    socket.on('updateBall', (data) => {
-        // Синхронизируем мяч, если мы НЕ контролируем его
-        // (Простая логика: кто ближе к мячу, тот и "сервер" мяча, но тут для надежности просто принимаем)
-        if (calculateDistance(playersMap[myId].position, ball.position) > 150) {
-             Body.setPosition(ball, { x: data.x, y: data.y });
-             Body.setVelocity(ball, { x: data.vx, y: data.vy });
-        }
-    });
-
-    socket.on('scoreUpdate', (score) => updateScore(score));
-    
-    socket.on('resetRound', (pos) => {
-        Body.setPosition(ball, pos);
-        Body.setVelocity(ball, { x: 0, y: 0 });
-        Body.setAngularVelocity(ball, 0);
-    });
-
-    function createPlayer(id, x, y, isMe) {
-        const color = (id === myId) ? (mySide === 'left' ? '#3498db' : '#e74c3c') : '#999';
+    function initGame() {
+        const { Engine, Render, Runner, Bodies, Composite, Body, Vector, Events, Collision } = Matter;
         
-        const playerBody = Bodies.circle(x, y, 30, { 
-            friction: 0.1, 
-            restitution: 0,
-            render: { fillStyle: color },
+        engine = Engine.create();
+        engine.world.gravity.y = 1.4; // Гравитация для динамики
+
+        render = Render.create({
+            element: document.getElementById('game-container'),
+            engine: engine,
+            options: { width: 800, height: 600, wireframes: false, background: 'transparent' }
+        });
+
+        // Создаем границы
+        const ground = Bodies.rectangle(400, 610, 810, 60, { isStatic: true, render: { fillStyle: '#555' }, label: 'ground' });
+        const leftWall = Bodies.rectangle(-10, 300, 20, 600, { isStatic: true, label: 'wall' });
+        const rightWall = Bodies.rectangle(810, 300, 20, 600, { isStatic: true, label: 'wall' });
+        const net = Bodies.rectangle(400, 520, 10, 180, { isStatic: true, render: { fillStyle: '#fff' }, chamfer: { radius: 5 } });
+        
+        ball = Bodies.circle(400, 150, 20, { 
+            restitution: 0.9, friction: 0.005, frictionAir: 0.015, density: 0.05,
+            render: { fillStyle: '#f1c40f' }
+        });
+
+        Composite.add(engine.world, [ground, leftWall, rightWall, net, ball]);
+
+        // --- УПРАВЛЕНИЕ ---
+        const keys = {};
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            
+            // Логика рывка (Dash) - Двойное нажатие
+            const now = Date.now();
+            if (lastKeyPress.key === e.code && now - lastKeyPress.time < 300) {
+                if (playersMap[myId]) {
+                    const force = 0.2; // Сила рывка
+                    if (e.code === 'ArrowLeft' || e.code === 'KeyA') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: -force, y: 0 });
+                    if (e.code === 'ArrowRight' || e.code === 'KeyD') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: force, y: 0 });
+                }
+                lastKeyPress.key = ''; // Сброс
+            } else {
+                lastKeyPress = { key: e.code, time: now };
+            }
+
+            // Прыжок по нажатию (для четкости)
+            if ((e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') && playersMap[myId]) {
+                if (jumpCount < MAX_JUMPS) {
+                    Body.setVelocity(playersMap[myId], { x: playersMap[myId].velocity.x, y: -16 });
+                    jumpCount++;
+                }
+            }
+        });
+        
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        // Детекция касания земли для сброса прыжков
+        Events.on(engine, 'collisionStart', (event) => {
+            const pairs = event.pairs;
+            pairs.forEach(pair => {
+                if (playersMap[myId] && (pair.bodyA === playersMap[myId] || pair.bodyB === playersMap[myId])) {
+                    const other = pair.bodyA === playersMap[myId] ? pair.bodyB : pair.bodyA;
+                    if (other.label === 'ground') {
+                        jumpCount = 0; // Сброс прыжков
+                    }
+                }
+            });
+        });
+
+        // Игровой цикл
+        Events.on(engine, 'afterUpdate', () => {
+            if (!playersMap[myId]) return;
+            const me = playersMap[myId];
+            const speed = 7;
+
+            // Движение влево/вправо
+            if (keys['ArrowLeft'] || keys['KeyA']) {
+                Body.setVelocity(me, { x: -speed, y: me.velocity.y });
+            } else if (keys['ArrowRight'] || keys['KeyD']) {
+                Body.setVelocity(me, { x: speed, y: me.velocity.y });
+            } else {
+                // Остановка скольжения, если не нажат рывок
+                Body.setVelocity(me, { x: me.velocity.x * 0.9, y: me.velocity.y });
+            }
+            
+            Body.setAngle(me, 0); // Запрет вращения
+
+            // Отправка позиции
+            socket.emit('move', { x: me.position.x, y: me.position.y, vx: me.velocity.x, vy: me.velocity.y });
+
+            // Логика хозяина мяча (Server Authority Lite)
+            if (calculateDistance(me.position, ball.position) < 150) {
+                socket.emit('syncBall', { 
+                    x: ball.position.x, y: ball.position.y, 
+                    vx: ball.velocity.x, vy: ball.velocity.y 
+                });
+            }
+
+            // Проверка гола (только левый игрок отправляет, чтобы не дублировать)
+            if (mySide === 'left' && ball.position.y > 580) {
+                triggerShake();
+                const winner = ball.position.x < 400 ? 'right' : 'left';
+                socket.emit('goal', winner);
+            }
+        });
+        
+        // Рендер тряски
+        Events.on(render, 'beforeRender', () => {
+             if (shakeDuration > 0) {
+                const dx = (Math.random() - 0.5) * 15;
+                const dy = (Math.random() - 0.5) * 15;
+                render.canvas.style.transform = `translate(${dx}px, ${dy}px)`;
+                shakeDuration--;
+            } else {
+                render.canvas.style.transform = 'none';
+            }
+        });
+
+        Render.run(render);
+        Runner.run(Runner.create(), engine);
+    }
+
+    // --- UTILS ---
+    
+    function createPlayer(id, x, y, color, isMe) {
+        if (playersMap[id]) return; // Уже создан
+        
+        const playerBody = Matter.Bodies.circle(x, y, 30, { 
+            friction: 0, // ВАЖНО: 0 трения чтобы не липнуть к стенам
+            frictionAir: 0.05,
+            restitution: 0, // Не пружинить при падении
+            render: { fillStyle: color, strokeStyle: '#fff', lineWidth: isMe ? 3 : 0 },
             label: isMe ? 'me' : 'enemy'
         });
         
         playersMap[id] = playerBody;
-        Composite.add(engine.world, playerBody);
+        Matter.Composite.add(engine.world, playerBody);
     }
-
-    function updateScore(s) {
-        document.getElementById('scoreLeft').innerText = s.left;
-        document.getElementById('scoreRight').innerText = s.right;
-    }
-
-    function calculateDistance(v1, v2) {
-        return Math.sqrt(Math.pow(v1.x - v2.x, 2) + Math.pow(v1.y - v2.y, 2));
-    }
-
-    // --- ИГРОВОЙ ЦИКЛ ---
-    Events.on(engine, 'afterUpdate', () => {
-        if (!myId || !playersMap[myId]) return;
-
-        const me = playersMap[myId];
-        const speed = 6;
-        const jump = -18;
-
-        // Движение
-        if (keys['ArrowLeft'] || keys['KeyA']) Body.setVelocity(me, { x: -speed, y: me.velocity.y });
-        else if (keys['ArrowRight'] || keys['KeyD']) Body.setVelocity(me, { x: speed, y: me.velocity.y });
-        else Body.setVelocity(me, { x: 0, y: me.velocity.y });
-
-        // Прыжок (только если на земле, проверяем примерно по Y)
-        if ((keys['ArrowUp'] || keys['KeyW'] || keys['Space']) && me.position.y > 560) {
-            Body.setVelocity(me, { x: me.velocity.x, y: jump });
-        }
-        
-        // Ограничение вращения игрока
-        Body.setAngle(me, 0);
-
-        // Отправка позиции
-        socket.emit('move', { x: me.position.x, y: me.position.y });
-
-        // ЛОГИКА ГОЛА (Только я проверяю, если я хост раунда - упрощенно)
-        // Если мяч коснулся пола
-        if (ball.position.y > 580) {
-            // Эффект удара
-            triggerShake();
-            
-            // Если я левый игрок, я отвечаю за отправку гола, чтобы не дублировать
-            if (mySide === 'left') {
-                if (ball.position.x < 400) socket.emit('goal', 'right');
-                else socket.emit('goal', 'left');
-            }
-        }
-
-        // Если я ближе всех к мячу, я отправляю его физику остальным
-        if (calculateDistance(me.position, ball.position) < 150) {
-            socket.emit('syncBall', { 
-                x: ball.position.x, y: ball.position.y, 
-                vx: ball.velocity.x, vy: ball.velocity.y 
+    
+    // Получение обновлений от врага
+    socket.on('updatePlayer', (data) => {
+        if (playersMap[data.id]) {
+            // Линейная интерполяция для плавности
+            Matter.Body.setPosition(playersMap[data.id], { 
+                x: playersMap[data.id].position.x + (data.x - playersMap[data.id].position.x) * 0.5, 
+                y: playersMap[data.id].position.y + (data.y - playersMap[data.id].position.y) * 0.5 
             });
         }
     });
 
-    Render.run(render);
-    Runner.run(Runner.create(), engine);
+    socket.on('updateBall', (data) => {
+        // Если я далеко от мяча, я верю серверу (сопернику)
+        if (playersMap[myId] && calculateDistance(playersMap[myId].position, ball.position) > 150) {
+             Matter.Body.setPosition(ball, { x: data.x, y: data.y });
+             Matter.Body.setVelocity(ball, { x: data.vx, y: data.vy });
+        }
+    });
 
+    socket.on('scoreUpdate', (s) => {
+        document.getElementById('scoreLeft').innerText = s.left;
+        document.getElementById('scoreRight').innerText = s.right;
+    });
+
+    socket.on('resetRound', (pos) => {
+        Matter.Body.setPosition(ball, pos);
+        Matter.Body.setVelocity(ball, { x: 0, y: 0 });
+        Matter.Body.setAngularVelocity(ball, 0);
+    });
+
+    let shakeDuration = 0;
+    function triggerShake() { shakeDuration = 20; }
+    
+    function calculateDistance(v1, v2) {
+        return Math.sqrt(Math.pow(v1.x - v2.x, 2) + Math.pow(v1.y - v2.y, 2));
+    }
 </script>
 </body>
 </html>
