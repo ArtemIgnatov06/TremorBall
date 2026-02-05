@@ -2,7 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid'); // Для генерации уникальных ссылок
+// Используем старый формат require для совместимости с версией 8.3.2
+const { v4: uuidv4 } = require('uuid'); 
 
 const app = express();
 const server = http.createServer(app);
@@ -12,117 +13,88 @@ const io = new Server(server, {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Хранилище комнат: { roomId: { players: [], score: {}, ball: {} } }
 let rooms = {};
-let queue = []; // Очередь для случайного поиска
+let queue = [];
 
-const SPAWN = {
-    ball: { x: 400, y: 150 },
-    left: { x: 200, y: 500 },
-    right: { x: 600, y: 500 }
-};
+const SPAWN = { ball: { x: 400, y: 150 } };
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    // 1. Игрок ищет матч или создает приватный
-    socket.on('findMatch', ({ skin, mode, roomId }) => {
-        let roomID;
+    socket.on('findMatch', ({ mode, roomId, skin }) => {
+        let targetRoomID;
         let side = 'left';
 
+        // 1. Случайный поиск
         if (mode === 'random') {
-            // Логика быстрого поиска
             if (queue.length > 0) {
-                roomID = queue.shift();
+                targetRoomID = queue.shift();
                 side = 'right';
             } else {
-                roomID = uuidv4();
-                queue.push(roomID);
+                targetRoomID = uuidv4();
+                queue.push(targetRoomID);
             }
-        } else if (mode === 'private') {
-            // Если roomId пришел с клиентом (он прошел по ссылке)
+        } 
+        // 2. Игра с другом
+        else if (mode === 'private') {
             if (roomId && rooms[roomId] && rooms[roomId].players.length < 2) {
-                roomID = roomId;
+                targetRoomID = roomId;
                 side = 'right';
             } else {
-                // Создаем новую комнату
-                roomID = uuidv4();
+                targetRoomID = uuidv4();
             }
         }
 
-        joinRoom(socket, roomID, side, skin);
+        joinRoom(socket, targetRoomID, side, skin);
     });
 
     function joinRoom(socket, roomID, side, skin) {
         socket.join(roomID);
 
-        // Инициализация комнаты, если нет
         if (!rooms[roomID]) {
-            rooms[roomID] = {
-                players: [],
-                score: { left: 0, right: 0 }
-            };
+            rooms[roomID] = { players: [], score: { left: 0, right: 0 } };
         }
 
         const player = { id: socket.id, side, skin, x: side === 'left' ? 200 : 600, y: 500 };
         rooms[roomID].players.push(player);
 
-        // Сообщаем клиенту, что он в игре
-        socket.emit('gameStart', { 
-            roomId: roomID, 
-            self: player, 
-            opponents: rooms[roomID].players.filter(p => p.id !== socket.id) 
-        });
-
-        // Если это второй игрок — уведомляем первого
-        if (rooms[roomID].players.length === 2) {
-            socket.to(roomID).emit('playerJoined', player);
-            io.to(roomID).emit('ready', true); // Начинаем
+        // Если это первый игрок - ждем
+        if (rooms[roomID].players.length === 1) {
+            socket.emit('waiting', { roomId: roomID });
         } else {
-            // Ждем игрока
-            socket.emit('waiting', { link: roomID });
+            // Если второй - начинаем
+            const opponent = rooms[roomID].players.find(p => p.id !== socket.id);
+            
+            // Стартуем нас
+            socket.emit('gameStart', { roomId: roomID, self: player, opponents: [opponent] });
+            
+            // Стартуем соперника
+            socket.to(roomID).emit('gameStart', { roomId: roomID, self: opponent, opponents: [player] });
         }
         
-        // Обработка дисконнекта
         socket.on('disconnect', () => {
-            leaveRoom(socket, roomID);
-        });
-        
-        // Обработка движений внутри комнаты
-        socket.on('move', (data) => {
-            socket.to(roomID).emit('updatePlayer', { id: socket.id, ...data });
-        });
-
-        socket.on('syncBall', (data) => {
-            socket.to(roomID).emit('updateBall', data);
-        });
-
-        socket.on('goal', (winnerSide) => {
             if (rooms[roomID]) {
-                rooms[roomID].score[winnerSide]++;
+                rooms[roomID].players = rooms[roomID].players.filter(p => p.id !== socket.id);
+                socket.to(roomID).emit('playerLeft', socket.id);
+                if (rooms[roomID].players.length === 0) {
+                    delete rooms[roomID];
+                    // Убрать из очереди, если он там был
+                    queue = queue.filter(id => id !== roomID);
+                }
+            }
+        });
+
+        socket.on('move', d => socket.to(roomID).emit('updatePlayer', { id: socket.id, ...d }));
+        socket.on('syncBall', d => socket.to(roomID).emit('updateBall', d));
+        socket.on('goal', side => {
+            if (rooms[roomID]) {
+                rooms[roomID].score[side]++;
                 io.to(roomID).emit('scoreUpdate', rooms[roomID].score);
                 io.to(roomID).emit('resetRound', SPAWN.ball);
             }
         });
     }
-
-    function leaveRoom(socket, roomID) {
-        // Убираем из очереди, если он там был
-        queue = queue.filter(id => id !== roomID);
-
-        if (rooms[roomID]) {
-            rooms[roomID].players = rooms[roomID].players.filter(p => p.id !== socket.id);
-            io.to(roomID).emit('playerLeft', socket.id);
-            
-            // Если комната пуста, удаляем её
-            if (rooms[roomID].players.length === 0) {
-                delete rooms[roomID];
-            }
-        }
-    }
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`TremorBall Server v2 running on port ${PORT}`);
-});
+server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
