@@ -81,8 +81,8 @@
     const MAX_JUMPS = 2;
     let lastKeyPress = { key: '', time: 0 };
     let shakeDuration = 0;
-    let isFrozen = false; // Мяч заморожен перед подачей?
-    let myTurnToServe = false; // Моя ли очередь подавать?
+    let isFrozen = false; 
+    let myTurnToServe = false; 
 
     // --- МЕНЮ ---
     function selectSkin(color, el) { mySkin = color; document.querySelectorAll('.skin-option').forEach(d => d.classList.remove('selected')); el.classList.add('selected'); }
@@ -117,7 +117,6 @@
     socket.on('playerJoined', p => createPlayer(p.id, p.x, p.y, p.skin, false));
     socket.on('playerLeft', id => { if(playersMap[id]) { Matter.Composite.remove(engine.world, playersMap[id]); delete playersMap[id]; } });
     
-    // Плавная синхронизация игрока
     socket.on('updatePlayer', (data) => {
         if (playersMap[data.id]) {
             Matter.Body.setPosition(playersMap[data.id], { 
@@ -127,9 +126,7 @@
         }
     });
 
-    // Синхронизация мяча
     socket.on('updateBall', (data) => {
-        // Если я далеко, верю серверу. Если мяч заморожен, тоже верю серверу.
         if (isFrozen || (playersMap[myId] && calculateDistance(playersMap[myId].position, ball.position) > 150)) {
              Matter.Body.setPosition(ball, { x: data.x, y: data.y });
              Matter.Body.setVelocity(ball, { x: data.vx, y: data.vy });
@@ -154,7 +151,6 @@
         setTimeout(() => msg.style.display = 'none', 3000);
     });
 
-    // Сброс раунда (спавн мяча)
     socket.on('resetRound', data => { 
         Matter.Body.setPosition(ball, { x: data.x, y: data.y }); 
         Matter.Body.setVelocity(ball, { x: 0, y: 0 }); 
@@ -162,12 +158,11 @@
         
         if (data.serveSide) {
             isFrozen = true;
-            Matter.Body.setStatic(ball, true); // Замораживаем мяч
+            Matter.Body.setStatic(ball, true); 
             if (data.serveSide === mySide) {
-                myTurnToServe = true; // Теперь я должен двинуться, чтобы разморозить
+                myTurnToServe = true; 
             }
         } else {
-            // Если serveSide null (начало игры или ничья), мяч просто падает
             isFrozen = false;
             Matter.Body.setStatic(ball, false);
         }
@@ -178,7 +173,7 @@
         const { Engine, Render, Runner, Bodies, Composite, Body, Events } = Matter;
         engine = Engine.create();
         
-        // 1. Усиленная гравитация для четкости прыжка
+        // 1. Гравитация (немного уменьшил для плавности)
         engine.world.gravity.y = 1.6; 
 
         render = Render.create({
@@ -187,40 +182,39 @@
             options: { width: 800, height: 600, wireframes: false, background: 'transparent' }
         });
 
-        // Категории для фильтрации (битовая маска)
         const CAT_DEFAULT = 0x0001;
         const CAT_PLAYER = 0x0002;
         const CAT_BARRIER = 0x0004;
         const CAT_BALL = 0x0008;
 
-        // Стены
         const ground = Bodies.rectangle(400, 610, 810, 60, { isStatic: true, render: { fillStyle: '#555' }, label: 'ground' });
         const leftWall = Bodies.rectangle(-10, 300, 20, 600, { isStatic: true });
         const rightWall = Bodies.rectangle(810, 300, 20, 600, { isStatic: true });
         
-        // Сетка (нижняя часть - твердая для всех)
-        const netBase = Bodies.rectangle(400, 520, 10, 180, { isStatic: true, render: { fillStyle: '#fff' }, chamfer: { radius: 5 } });
+        // СЕТКА: Сделал выше (height: 250, y: 485)
+        const netBase = Bodies.rectangle(400, 485, 10, 250, { isStatic: true, render: { fillStyle: '#fff' }, chamfer: { radius: 5 } });
         
-        // БАРЬЕР (Невидимая стена над сеткой)
-        // Блокирует игроков, но пропускает мяч
-        const barrier = Bodies.rectangle(400, 200, 10, 460, { 
+        // НЕВИДИМЫЙ БАРЬЕР: Сделал выше, чтобы игроки не перепрыгивали
+        const barrier = Bodies.rectangle(400, 100, 10, 600, { 
             isStatic: true, 
-            render: { visible: false }, // Невидимый
+            render: { visible: false }, 
             collisionFilter: {
                 category: CAT_BARRIER,
-                mask: CAT_PLAYER // Ставим маску: сталкивается ТОЛЬКО с игроками
+                mask: CAT_PLAYER 
             }
         });
 
-        // Мяч (Плавный)
-        ball = Bodies.circle(400, 150, 20, { 
-            restitution: 0.9, // Прыгучесть
+        // МЯЧ: Увеличил размер до 35 и добавил плавности (frictionAir)
+        ball = Bodies.circle(400, 150, 35, { 
+            restitution: 0.95, // Сильнее отскакивает
             friction: 0.001,
-            frictionAir: 0.001, // Меньше сопротивления воздуха = плавнее полет
+            frictionAir: 0.008, // Сопротивление воздуха (делает полет плавным, не как пуля)
+            density: 0.04,
             render: { fillStyle: '#f1c40f' },
+            label: 'ball', // Важно для детекции гола
             collisionFilter: {
                 category: CAT_BALL,
-                mask: CAT_DEFAULT | CAT_PLAYER // Сталкивается со всем, КРОМЕ барьера
+                mask: CAT_DEFAULT | CAT_PLAYER 
             }
         });
 
@@ -231,7 +225,6 @@
         window.addEventListener('keydown', e => {
             keys[e.code] = true;
             
-            // Если моя очередь подавать и я нажал кнопку - размораживаем мяч
             if (myTurnToServe && isFrozen && ['ArrowLeft','ArrowRight','ArrowUp','KeyA','KeyD','KeyW','Space'].includes(e.code)) {
                 socket.emit('serve');
                 myTurnToServe = false;
@@ -239,10 +232,9 @@
                 Body.setStatic(ball, false);
             }
 
-            // Рывок
             const now = Date.now();
             if (lastKeyPress.key === e.code && now - lastKeyPress.time < 300 && playersMap[myId]) {
-                const force = 0.35; // Мощный рывок
+                const force = 0.35; 
                 if (e.code === 'ArrowLeft' || e.code === 'KeyA') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: -force, y: 0 });
                 if (e.code === 'ArrowRight' || e.code === 'KeyD') Body.applyForce(playersMap[myId], playersMap[myId].position, { x: force, y: 0 });
                 lastKeyPress.key = '';
@@ -250,23 +242,44 @@
                 lastKeyPress = { key: e.code, time: now };
             }
 
-            // Прыжок (постоянная высота)
+            // ПРЫЖОК: Сделал ниже (сила -0.38 вместо -0.45)
             if ((e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'Space') && playersMap[myId]) {
                 if (jumpCount < MAX_JUMPS) {
-                    // Сбрасываем вертикальную скорость перед прыжком для стабильности
                     Body.setVelocity(playersMap[myId], { x: playersMap[myId].velocity.x, y: 0 });
-                    Body.applyForce(playersMap[myId], playersMap[myId].position, { x: 0, y: -0.45 }); // Резкая сила вверх
+                    Body.applyForce(playersMap[myId], playersMap[myId].position, { x: 0, y: -0.38 }); 
                     jumpCount++;
                 }
             }
         });
         window.addEventListener('keyup', e => keys[e.code] = false);
 
-        // Сброс прыжков при касании земли
+        // ОБРАБОТКА СТОЛКНОВЕНИЙ (ГОЛ И ПРЫЖКИ)
         Events.on(engine, 'collisionStart', (event) => {
             event.pairs.forEach(pair => {
-                if (playersMap[myId] && (pair.bodyA === playersMap[myId] || pair.bodyB === playersMap[myId])) {
-                    const other = pair.bodyA === playersMap[myId] ? pair.bodyB : pair.bodyA;
+                const bodyA = pair.bodyA;
+                const bodyB = pair.bodyB;
+
+                // 1. Детекция гола (Мяч коснулся Земли)
+                if ((bodyA.label === 'ball' && bodyB.label === 'ground') || (bodyB.label === 'ball' && bodyA.label === 'ground')) {
+                    // Кто пропустил? Смотрим по X координате мяча
+                    if (ball.position.x < 400) {
+                        // Мяч упал слева -> Левый проиграл очко
+                        if (mySide === 'left') {
+                            triggerShake();
+                            socket.emit('goal', 'left');
+                        }
+                    } else {
+                        // Мяч упал справа -> Правый проиграл очко
+                        if (mySide === 'right') {
+                            triggerShake();
+                            socket.emit('goal', 'right');
+                        }
+                    }
+                }
+
+                // 2. Сброс прыжков
+                if (playersMap[myId] && (bodyA === playersMap[myId] || bodyB === playersMap[myId])) {
+                    const other = bodyA === playersMap[myId] ? bodyB : bodyA;
                     if (other.label === 'ground') jumpCount = 0;
                 }
             });
@@ -276,33 +289,21 @@
         Events.on(engine, 'afterUpdate', () => {
             if (!playersMap[myId]) return;
             const me = playersMap[myId];
-            const speed = 8; // Быстрее бег
+            const speed = 8; 
 
             if (keys['ArrowLeft'] || keys['KeyA']) Body.setVelocity(me, { x: -speed, y: me.velocity.y });
             else if (keys['ArrowRight'] || keys['KeyD']) Body.setVelocity(me, { x: speed, y: me.velocity.y });
-            else Body.setVelocity(me, { x: me.velocity.x * 0.85, y: me.velocity.y }); // Быстрое торможение
+            else Body.setVelocity(me, { x: me.velocity.x * 0.85, y: me.velocity.y }); 
             
             Body.setAngle(me, 0);
 
-            // Отправка данных
             socket.emit('move', { x: me.position.x, y: me.position.y, vx: me.velocity.x, vy: me.velocity.y });
 
             if (!isFrozen && calculateDistance(me.position, ball.position) < 150) {
                 socket.emit('syncBall', { x: ball.position.x, y: ball.position.y, vx: ball.velocity.x, vy: ball.velocity.y });
             }
-
-            // Гол: если я пропустил мяч на своей стороне (коснулся пола)
-            if (mySide === 'left' && ball.position.x < 400 && ball.position.y > 580) {
-                triggerShake();
-                socket.emit('goal', 'left'); // Я проиграл очко
-            }
-            if (mySide === 'right' && ball.position.x > 400 && ball.position.y > 580) {
-                triggerShake();
-                socket.emit('goal', 'right'); // Я проиграл очко
-            }
         });
 
-        // Эффект тряски
         Events.on(render, 'beforeRender', () => {
              if (shakeDuration > 0) {
                 const dx = (Math.random() - 0.5) * 15;
@@ -320,12 +321,11 @@
 
     function createPlayer(id, x, y, color, isMe) {
         if(playersMap[id]) return;
-        const p = Matter.Bodies.circle(x, y, 40, { // РАДИУС 40 (большие модельки)
+        const p = Matter.Bodies.circle(x, y, 40, { 
             friction: 0, frictionAir: 0.05, restitution: 0, 
             render: { fillStyle: color || '#999', strokeStyle: '#fff', lineWidth: isMe ? 3 : 0 },
             collisionFilter: {
-                category: 0x0002, // CAT_PLAYER
-                // Маска: сталкивается со всем (стены, мяч, барьер)
+                category: 0x0002, 
                 mask: 0x0001 | 0x0004 | 0x0008 
             }
         });
